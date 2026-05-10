@@ -1,0 +1,29 @@
+// Copyright 2026 go-casclib Contributors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package wow
+
+import "testing"
+
+func FuzzParse(f *testing.F) {
+	f.Add([]byte{})
+	// 'TSFM' (legacy v1 marker) → routes to v1 path.
+	f.Add([]byte{'T', 'S', 'F', 'M'})
+	// 'MD5R' (v2 magic).
+	f.Add([]byte{'M', 'D', '5', 'R'})
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		_, _ = Parse(data)
+	})
+}

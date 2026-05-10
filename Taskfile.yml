@@ -1,0 +1,264 @@
+version: "3"
+
+vars:
+  LOCALBIN: '{{.TASKFILE_DIR}}/bin'
+  PARITY_BIN: '{{.TASKFILE_DIR}}/bin/casc-parity'
+  PARITY_REPORTS_DIR: '{{.TASKFILE_DIR}}/parity-reports'
+  GOLANGCI_LINT_VERSION: v2.11.4
+  ADDLICENSE_VERSION: latest
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list-all
+
+  # ── Go tests ─────────────────────────────────────────────────────────────
+  test:
+    desc: Full local CI (vet, fmt, lint, test, race)
+    cmds:
+      - task: go:fmt:check
+      - task: go:vet
+      - task: lint
+      - task: go:test
+      - task: go:race
+
+  go:test:
+    desc: Run unit tests
+    cmds:
+      - go test -count=1 ./...
+
+  go:test:v:
+    desc: Run unit tests verbose
+    cmds:
+      - go test -count=1 -v ./...
+
+  go:race:
+    desc: Run tests with race detector on core packages
+    cmds:
+      - go test -race -count=1 ./internal/storage/... ./pkg/casc/... ./internal/archive/...
+
+  go:vet:
+    desc: Run go vet
+    cmds:
+      - go vet ./...
+
+  go:fmt:check:
+    desc: Verify Go formatting
+    cmds:
+      - |
+        UNFORMATTED="$(gofmt -l $(find . -path ./CascLib -prune -o -name '*.go' -print))"
+        if [ -n "${UNFORMATTED}" ]; then
+          echo "gofmt check failed; unformatted files:"
+          echo "${UNFORMATTED}"
+          exit 1
+        fi
+
+  go:fmt:
+    desc: Format Go sources
+    cmds:
+      - gofmt -w $(find . -path ./CascLib -prune -o -name '*.go' -print)
+
+  # ── Codegen ──────────────────────────────────────────────────────────────
+  gen:cmfkeys:
+    desc: Regenerate Overwatch CMF keytables and key/IV recipes from CascLib/src/overwatch/cmf-key.cpp
+    cmds:
+      - python3 tools/cmfkeygen/main.py
+
+  # ── Lint ─────────────────────────────────────────────────────────────────
+  lint:
+    desc: Run golangci-lint
+    deps: [tools:golangci-lint]
+    cmds:
+      - '{{.LOCALBIN}}/golangci-lint run --config .golangci.yaml ./...'
+
+  lint:fix:
+    desc: Run golangci-lint with --fix
+    deps: [tools:golangci-lint]
+    cmds:
+      - '{{.LOCALBIN}}/golangci-lint run --config .golangci.yaml --fix ./...'
+
+  # ── Fuzz ─────────────────────────────────────────────────────────────────
+  fuzz:blte:
+    desc: Fuzz BLTE frame header parser (20s)
+    cmds:
+      - go test ./internal/datafile -run=^$ -fuzz=FuzzParseHeader -fuzztime=20s
+
+  fuzz:index:
+    desc: Fuzz local index parser (20s)
+    cmds:
+      - go test ./internal/index -run=^$ -fuzz=FuzzParse -fuzztime=20s
+
+  fuzz:tvfs:
+    desc: Fuzz TVFS root parser (20s)
+    cmds:
+      - go test ./internal/root/tvfs -run=^$ -fuzz=FuzzParse -fuzztime=20s
+
+  fuzz:encoding:
+    desc: Fuzz ENCODING manifest parser (20s)
+    cmds:
+      - go test ./internal/encoding -run=^$ -fuzz=FuzzParse -fuzztime=20s
+
+  fuzz:wow:
+    desc: Fuzz WoW root parser (20s)
+    cmds:
+      - go test ./internal/root/wow -run=^$ -fuzz=FuzzParse -fuzztime=20s
+
+  fuzz:diablo3:
+    desc: Fuzz Diablo III root parser (20s)
+    cmds:
+      - go test ./internal/root/diablo3 -run=^$ -fuzz=FuzzParse -fuzztime=20s
+
+  fuzz:buildcfg:
+    desc: Fuzz build/CDN config parser (20s)
+    cmds:
+      - go test ./internal/buildcfg -run=^$ -fuzz=FuzzParse -fuzztime=20s
+
+  fuzz:cdn:download:
+    desc: Fuzz CDN download manifest parser (20s)
+    cmds:
+      - go test ./internal/cdn -run=^$ -fuzz=FuzzParseDownload -fuzztime=20s
+
+  fuzz:cdn:archive-index:
+    desc: Fuzz CDN archive-index parser (20s)
+    cmds:
+      - go test ./internal/cdn -run=^$ -fuzz=FuzzParseArchiveIndex -fuzztime=20s
+
+  fuzz:mndx:
+    desc: Fuzz MNDX header / MAR-info parser (20s)
+    cmds:
+      - go test ./internal/root/mndx -run=^$ -fuzz=FuzzParse -fuzztime=20s
+
+  fuzz:
+    desc: Run all fuzz targets sequentially (short)
+    cmds:
+      - task: fuzz:blte
+      - task: fuzz:index
+      - task: fuzz:tvfs
+      - task: fuzz:encoding
+      - task: fuzz:wow
+      - task: fuzz:diablo3
+      - task: fuzz:buildcfg
+      - task: fuzz:cdn:download
+      - task: fuzz:cdn:archive-index
+      - task: fuzz:mndx
+
+  # ── Bench ──────────────────────────────────────────────────────────────────────────────────
+  bench:
+    desc: Run all benchmarks (2s each)
+    cmds:
+      - go test -bench=. -benchtime=2s -run=^$ ./...
+
+  # ── Parity ───────────────────────────────────────────────────────────────
+  parity:build:
+    desc: Build the in-repo Go parity command binary
+    cmds:
+      - mkdir -p '{{.LOCALBIN}}'
+      - go build -o '{{.PARITY_BIN}}' ./tools/paritycmd
+
+  parity:run:
+    desc: Run structured parity suite (Go-only baseline)
+    deps: [parity:build]
+    cmds:
+      - mkdir -p '{{.PARITY_REPORTS_DIR}}'
+      - |
+        REPORT='{{.PARITY_REPORTS_DIR}}/parity-report.jsonl'
+        CASCLIB_PARITY_CMD='{{.PARITY_BIN}}' \
+          go test ./tools/parity -count=1 -json | tee "${REPORT}"
+
+  cparity:build:
+    desc: Build the native CascLib parity oracle (tools/casclib-parity-c)
+    cmds:
+      - cmake -S tools/casclib-parity-c -B tools/casclib-parity-c/build -DCMAKE_BUILD_TYPE=Release
+      - cmake --build tools/casclib-parity-c/build --parallel
+
+  parity:c:
+    desc: Run the parity protocol suite against the native CascLib binary
+    deps: [cparity:build]
+    cmds:
+      - mkdir -p '{{.PARITY_REPORTS_DIR}}'
+      - |
+        REPORT='{{.PARITY_REPORTS_DIR}}/parity-c-report.jsonl'
+        CASCLIB_PARITY_CMD='{{.TASKFILE_DIR}}/tools/casclib-parity-c/build/casclib-parity-c' \
+          go test ./tools/parity -count=1 -json | tee "${REPORT}"
+
+  parity:diff:build:
+    desc: Build the parity drift comparator (tools/paritydiff)
+    cmds:
+      - mkdir -p '{{.LOCALBIN}}'
+      - go build -o '{{.LOCALBIN}}/parity-diff' ./tools/paritydiff
+
+  parity:diff:
+    desc: Diff Go vs. native CascLib parity output for a fixture (set FIXTURE; optional READ=N for content drift)
+    deps: [parity:build, cparity:build, parity:diff:build]
+    cmds:
+      - mkdir -p '{{.PARITY_REPORTS_DIR}}'
+      - |
+        if [ -z "${FIXTURE:-}" ]; then
+          echo "set FIXTURE=/path/to/storage to run"; exit 1
+        fi
+        '{{.LOCALBIN}}/parity-diff' \
+          -go '{{.PARITY_BIN}}' \
+          -c '{{.TASKFILE_DIR}}/tools/casclib-parity-c/build/casclib-parity-c' \
+          -fixture "${FIXTURE}" \
+          -read "${READ:-0}" \
+          -out '{{.PARITY_REPORTS_DIR}}/drift.json'
+
+  parity:mndx:
+    desc: Cross-validate MNDX fixtures (set CASC_PARITY_MNDX_FIXTURES; optional CASC_PARITY_MNDX_READ=N)
+    deps: [parity:build, cparity:build]
+    cmds:
+      - |
+        if [ -z "${CASC_PARITY_MNDX_FIXTURES:-}" ]; then
+          echo "set CASC_PARITY_MNDX_FIXTURES=/path1[:/path2] to run"; exit 1
+        fi
+        CASCLIB_PARITY_CMD='{{.PARITY_BIN}}' \
+        CASCLIB_PARITY_C_CMD='{{.TASKFILE_DIR}}/tools/casclib-parity-c/build/casclib-parity-c' \
+          go test ./tools/parity -count=1 -run TestMNDXCrossValidation -v
+
+  license:header:
+    desc: Add license headers to all .go files
+    deps: [tools:addlicense]
+    cmds:
+      - "{{.LOCALBIN}}/addlicense -f hack/license-header.txt $(git ls-files '*.go')"
+
+  # ── Tools installation ────────────────────────────────────────────────────
+  go:install-tool:
+    desc: Install a versioned Go tool into LOCALBIN (internal helper)
+    internal: true
+    cmds:
+      - mkdir -p '{{.LOCALBIN}}'
+      - |
+        if [ ! -f '{{.TOOL_BIN}}-{{.TOOL_VERSION}}' ]; then
+          set -e
+          package='{{.TOOL_PKG}}@{{.TOOL_VERSION}}'
+          echo "Downloading ${package}"
+          rm -f '{{.TOOL_BIN}}' || true
+          GOBIN='{{.LOCALBIN}}' go install "${package}"
+          mv '{{.TOOL_BIN}}' '{{.TOOL_BIN}}-{{.TOOL_VERSION}}'
+        fi
+        ln -sf '{{.TOOL_BIN}}-{{.TOOL_VERSION}}' '{{.TOOL_BIN}}'
+  
+  tools:golangci-lint:
+    desc: Install golangci-lint into LOCALBIN
+    cmds:
+      - mkdir -p '{{.LOCALBIN}}'
+      - |
+        if [ ! -x '{{.LOCALBIN}}/golangci-lint' ]; then
+          GOBIN='{{.LOCALBIN}}' go install \
+            github.com/golangci/golangci-lint/v2/cmd/golangci-lint@{{.GOLANGCI_LINT_VERSION}}
+        fi
+
+  tools:addlicense:
+    desc: Install addlicense locally if necessary
+    cmds:
+      - task: go:install-tool
+        vars:
+          TOOL_BIN: '{{.LOCALBIN}}/addlicense'
+          TOOL_PKG: github.com/google/addlicense
+          TOOL_VERSION: '{{.ADDLICENSE_VERSION}}'
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - rm -rf bin parity-reports tools/casclib-parity-c/build
